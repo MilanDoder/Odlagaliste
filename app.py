@@ -93,56 +93,190 @@ def plotly_rezultati(
     teren_vertices: np.ndarray,
     zona_x: np.ndarray,
     zona_y: np.ndarray,
+    dobre_zone: list = None,
+    lose_zone: list = None,
+    centar_masa: np.ndarray = None,
 ) -> go.Figure:
-    """Interaktivna 2D mapa rezultata sa tačkama odlagališta."""
-    # Teren u pozadini (decimirani)
-    korak = max(1, len(teren_vertices) // 2000)
-    t = teren_vertices[::korak]
+    """Interaktivna 2D mapa sa terenom, ekonomskim zonama, granicom i rezultatima."""
+
+    BOJE_ZONA = {
+        "Z-1": "#378ADD",
+        "Z-3": "#1D9E75",
+        "Z-4": "#BA7517",
+        "Z-5": "#E24B4A",
+    }
+
+    def boja_zone(naziv):
+        for prefiks, boja in BOJE_ZONA.items():
+            if naziv.startswith(prefiks):
+                return boja
+        return "#888888"
 
     fig = go.Figure()
 
-    # Teren
+    # Teren u pozadini
+    korak = max(1, len(teren_vertices) // 3000)
+    t = teren_vertices[::korak]
     fig.add_trace(go.Scattergl(
         x=t[:, 0], y=t[:, 1],
         mode="markers",
-        marker=dict(size=2, color=t[:, 2], colorscale="Greys", opacity=0.4),
+        marker=dict(size=2, color=t[:, 2], colorscale="Greys", opacity=0.35, showscale=False),
         name="Teren",
         showlegend=True,
+        hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Z: %{customdata:.1f}m",
+        customdata=t[:, 2],
     ))
 
-    # Granica zone interesa
+    # Ekonomske zone (dobre)
+    if dobre_zone:
+        dodane_u_legendu = set()
+        for zona in dobre_zone:
+            boja = boja_zone(zona.naziv)
+            tip = next((p for p in BOJE_ZONA if zona.naziv.startswith(p)), "Ostalo")
+            u_legendi = tip not in dodane_u_legendu
+            if u_legendi:
+                dodane_u_legendu.add(tip)
+            x_z = np.append(zona.x_data, zona.x_data[0])
+            y_z = np.append(zona.y_data, zona.y_data[0])
+            fig.add_trace(go.Scatter(
+                x=x_z, y=y_z,
+                mode="lines",
+                fill="toself",
+                fillcolor=boja,
+                opacity=0.25,
+                line=dict(color=boja, width=1),
+                name=f"Zona {tip}",
+                legendgroup=tip,
+                showlegend=u_legendi,
+                hovertemplate=f"<b>{zona.naziv}</b><br>Površina: {zona.povrsina:,.0f} m²",
+            ))
+
+    # Loše zone (Z-5)
+    if lose_zone:
+        dodana_losa = False
+        for zona in lose_zone:
+            x_z = np.append(zona.x_data, zona.x_data[0])
+            y_z = np.append(zona.y_data, zona.y_data[0])
+            fig.add_trace(go.Scatter(
+                x=x_z, y=y_z,
+                mode="lines",
+                fill="toself",
+                fillcolor="#E24B4A",
+                opacity=0.3,
+                line=dict(color="#E24B4A", width=1.5, dash="dot"),
+                name="Zona Z-5 (zabranjena)",
+                legendgroup="Z-5",
+                showlegend=not dodana_losa,
+                hovertemplate=f"<b>{zona.naziv}</b> — zabranjena zona",
+            ))
+            dodana_losa = True
+
+    # Granica interesne zone
     fig.add_trace(go.Scatter(
         x=np.append(zona_x, zona_x[0]),
         y=np.append(zona_y, zona_y[0]),
         mode="lines",
-        line=dict(color="#378ADD", width=2, dash="dash"),
-        name="Granica zone",
+        line=dict(color="#FFD700", width=3, dash="dash"),
+        name="Granica zone interesa",
+        hovertemplate="Granica interesne zone",
     ))
 
-    if rezultati:
-        boje = ["#1D9E75" if r.unutar_zone else "#E24B4A" for r in rezultati]
+    # Centar masa — zvjezdica
+    if centar_masa is not None:
         fig.add_trace(go.Scatter(
-            x=[r.wx for r in rezultati],
-            y=[r.wy for r in rezultati],
+            x=[float(centar_masa[0])],
+            y=[float(centar_masa[1])],
             mode="markers+text",
-            marker=dict(size=12, color=boje, line=dict(width=1, color="white")),
-            text=[f"{r.naziv}<br>f={r.f_vrednost:.3f}<br>V={r.zapremina/1e6:.2f}Mm³"
-                  for r in rezultati],
-            textposition="top center",
-            name="Optimizovane tačke",
+            marker=dict(symbol="star", size=22, color="#FF00FF",
+                        line=dict(width=2, color="white")),
+            text=["  Centar masa"],
+            textposition="middle right",
+            textfont=dict(size=13, color="#FF00FF"),
+            name="Centar masa",
             hovertemplate=(
-                "<b>%{text}</b><br>"
-                "X: %{x:.0f}<br>Y: %{y:.0f}"
+                f"<b>Centar masa</b><br>"
+                f"X: {float(centar_masa[0]):.0f}<br>"
+                f"Y: {float(centar_masa[1]):.0f}<extra></extra>"
             ),
         ))
 
+    # Rezultati GA
+    if rezultati:
+        validni   = [r for r in rezultati if r.unutar_zone]
+        nevalidni = [r for r in rezultati if not r.unutar_zone]
+
+        if validni:
+            fig.add_trace(go.Scatter(
+                x=[r.wx for r in validni],
+                y=[r.wy for r in validni],
+                mode="markers",
+                marker=dict(
+                    symbol="circle",
+                    size=14,
+                    color=[r.f_vrednost for r in validni],
+                    colorscale="RdYlGn_r",
+                    showscale=True,
+                    colorbar=dict(title="f vrijednost", x=1.02),
+                    line=dict(width=2, color="white"),
+                ),
+                name="Validne lokacije",
+                customdata=[[r.naziv, r.f_vrednost, r.zapremina/1e6, r.wz, r.k, r.zone]
+                            for r in validni],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "f = %{customdata[1]:.4f}<br>"
+                    "V = %{customdata[2]:.2f} Mm³<br>"
+                    "wz = %{customdata[3]:.1f} m<br>"
+                    "k = %{customdata[4]:.1f} m<br>"
+                    "Zone: %{customdata[5]}<extra></extra>"
+                ),
+            ))
+
+        if nevalidni:
+            fig.add_trace(go.Scatter(
+                x=[r.wx for r in nevalidni],
+                y=[r.wy for r in nevalidni],
+                mode="markers",
+                marker=dict(symbol="x", size=10, color="#E24B4A",
+                            line=dict(width=2, color="#E24B4A")),
+                name="Van zone (odbačene)",
+                text=[r.naziv for r in nevalidni],
+                hovertemplate="<b>%{text}</b> — van zone<extra></extra>",
+            ))
+
+        # Najbolja lokacija — zlatna zvjezdica
+        if validni:
+            best = min(validni, key=lambda r: r.f_vrednost)
+            fig.add_trace(go.Scatter(
+                x=[best.wx], y=[best.wy],
+                mode="markers+text",
+                marker=dict(symbol="star", size=26, color="#FFD700",
+                            line=dict(width=2, color="black")),
+                text=[f"  BEST: {best.naziv}"],
+                textposition="middle right",
+                textfont=dict(size=12, color="#FFD700"),
+                name=f"Najbolja lokacija",
+                hovertemplate=(
+                    f"<b>Najbolja lokacija</b><br>"
+                    f"f = {best.f_vrednost:.4f}<br>"
+                    f"V = {best.zapremina/1e6:.2f} Mm³<extra></extra>"
+                ),
+            ))
+
     fig.update_layout(
-        title="Rezultati optimizacije",
+        title="Mapa optimizacije odlagališta",
         xaxis_title="X koordinata",
         yaxis_title="Y koordinata",
-        height=500,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-        margin=dict(l=0, r=0, t=40, b=0),
+        height=620,
+        legend=dict(
+            yanchor="top", y=0.99,
+            xanchor="left", x=0.01,
+            bgcolor="rgba(30,30,30,0.7)",
+            font=dict(size=11),
+        ),
+        margin=dict(l=0, r=80, t=40, b=0),
+        plot_bgcolor="rgba(15,15,25,0.95)",
+        paper_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
@@ -279,12 +413,34 @@ with st.sidebar:
     st.header("Parametri GA")
 
     ugao = st.slider("Ugao kosine (°)", 15.0, 60.0, 37.0, 0.5)
-    n_tacaka = st.slider("Monte Carlo tačaka", 10, 500, 100, 10)
-    n_ponavljanja = st.slider("Ponavljanja", 1, 5, 1)
     min_v = st.number_input("Min zapremina (m³)", value=100_000.0, step=10_000.0, format="%.0f")
     max_v = st.number_input("Max zapremina (m³)", value=50_000_000.0, step=1_000_000.0, format="%.0f")
     populacija = st.slider("GA populacija", 10, 100, 30, 5)
     verzija = st.radio("Bounds verzija", ["buvac", "v1"], index=0)
+
+    st.divider()
+    st.header("Način rada")
+    nacin_rada = st.radio(
+        "Odaberi način generisanja tačaka:",
+        ["🎲 Monte Carlo", "📍 Konkretna tačka"],
+        index=0,
+    )
+
+    if nacin_rada == "🎲 Monte Carlo":
+        n_tacaka = st.slider("Broj nasumičnih tačaka", 10, 500, 100, 10)
+        n_ponavljanja = st.slider("Ponavljanja", 1, 5, 1)
+        # Konkretna tačka nije aktivna
+        konk_wx = None
+        konk_wy = None
+        konk_wz = None
+    else:
+        st.caption("Unesi koordinate tačke na kojoj hoćeš da optimizuješ kupu.")
+        konk_wx = st.number_input("X koordinata", value=6413080.0, format="%.2f")
+        konk_wy = st.number_input("Y koordinata", value=4970217.0, format="%.2f")
+        konk_wz = st.number_input("Z koordinata (visina)", value=185.0, format="%.2f",
+                                   help="Početna visina — GA će optimizovati wz unutar bounds-a")
+        n_tacaka = 1
+        n_ponavljanja = 1
 
     st.divider()
     pokreni = st.button("▶ Pokreni optimizaciju", type="primary", use_container_width=True)
@@ -362,13 +518,22 @@ with tab_teren:
 # Tab 2: Optimizacija — pokretanje
 # ---------------------------------------------------------------------------
 with tab_optimizacija:
+
+    # Prikaz odabranog načina rada
+    if nacin_rada == "📍 Konkretna tačka":
+        st.info(
+            f"**Konkretna tačka:** X = {konk_wx:.2f},  Y = {konk_wy:.2f},  Z = {konk_wz:.2f}  "
+            f"— GA će optimizovati visinu (wz) i širinu (k) kupe na ovoj poziciji."
+        )
+    else:
+        st.info(f"**Monte Carlo:** {n_tacaka} nasumičnih tačaka × {n_ponavljanja} ponavljanja")
+
     if pokreni:
-        # Provjeri da li su podaci učitani
+        # --- Učitaj podatke ako nisu već ---
         if st.session_state.podaci is None:
             if not all([f_teren, f_granice]):
                 st.error("Potrebno je uploadovati barem fajl terena i granice zone.")
                 st.stop()
-            # Učitaj automatski
             with st.spinner("Učitavam podatke..."):
                 p_teren   = spremi_upload(f_teren)
                 p_granice = spremi_upload(f_granice)
@@ -410,75 +575,135 @@ with tab_optimizacija:
             max_generacija=podaci.parametri.broj_generacija,
         )
 
-        # ---- Faza 1: Monte Carlo ----
-        with st.status("🎲 Monte Carlo generisanje tačaka...", expanded=True) as status:
-            sve_dobre = []
-            for rep in range(1, n_ponavljanja + 1):
-                st.write(f"Ponavljanje {rep}/{n_ponavljanja}...")
-                tacke = generiši_tačke(
-                    n=n_tacaka,
-                    x_range=granice.x_range,
-                    y_range=granice.y_range,
-                    z_range=granice.z_range,
-                    zona_x=granice.x_poly,
-                    zona_y=granice.y_poly,
-                    lose_zone=podaci.lose_zone,
-                )
-                # Provjera geometrije kupe
-                for j, tacka in enumerate(tacke):
-                    wx, wy, wz = float(tacka[0]), float(tacka[1]), float(tacka[2])
-                    rez = zapremina_kupe(wx, wy, wz, ugao, 0.001,
-                                        podaci.parametri.nadmorska_visina,
-                                        podaci.teren, granice.x_poly, granice.y_poly)
-                    if (rez.zapremina < 40_000_000 and
-                            rez.intersect_surface is not None and
-                            rez.intersect_surface.vertices.shape[0] > 0):
-                        sve_dobre.append((f"p_{j+1}_{rep}", wx, wy, wz))
-
-            status.update(
-                label=f"✅ Monte Carlo završen — {len(sve_dobre)} dobrih tačaka",
-                state="complete",
-            )
-
-        if not sve_dobre:
-            st.warning("Nema dobrih tačaka. Povećaj broj tačaka ili provjeri parametre.")
-            st.stop()
-
-        # ---- Faza 2: GA ----
-        tacke_array = np.array([[wx, wy, wz] for _, wx, wy, wz in sve_dobre])
         svi_rez: list[RezultatTacke] = []
         validni_rez: list[RezultatTacke] = []
 
-        progress = st.progress(0, text="Pokretanje GA...")
-        n = len(tacke_array)
+        # ================================================================
+        # NAČIN 1: Konkretna tačka
+        # ================================================================
+        if nacin_rada == "📍 Konkretna tačka":
+            with st.status("📍 Pokretanje GA za konkretnu tačku...", expanded=True) as status:
+                st.write(f"Tačka: X={konk_wx:.2f}, Y={konk_wy:.2f}, Z={konk_wz:.2f}")
+                st.write("Optimizujem wz i k...")
 
-        for i, (naziv, wx, wy, wz) in enumerate(sve_dobre):
-            progress.progress((i + 1) / n,
-                               text=f"GA tačka {i+1}/{n}: ({wx:.0f}, {wy:.0f})")
-            rez = optimizuj_tacku(naziv, wx, wy, ctx, opcije, verzija)
+                rez = optimizuj_tacku(
+                    naziv="konkretna_tacka",
+                    wx=konk_wx,
+                    wy=konk_wy,
+                    ctx=ctx,
+                    opcije=opcije,
+                    verzija=verzija,
+                )
+
+                if rez:
+                    svi_rez.append(rez)
+                    if rez.unutar_zone:
+                        validni_rez.append(rez)
+                    status.update(label="✅ GA završen", state="complete")
+                else:
+                    status.update(
+                        label="⚠ GA nije našao rješenje za ovu tačku",
+                        state="error"
+                    )
+                    st.warning(
+                        "GA nije uspio pronaći validnu kupu na ovoj poziciji. "
+                        "Provjeri koordinate — tačka možda nije unutar zone interesa, "
+                        "ili zapremina ne zadovoljava granice."
+                    )
+
+            # Direktni prikaz rezultata za konkretnu tačku
             if rez:
-                svi_rez.append(rez)
-                if rez.unutar_zone:
-                    validni_rez.append(rez)
+                st.subheader("Rezultat optimizacije")
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("f vrijednost", f"{rez.f_vrednost:.4f}")
+                c2.metric("Zapremina", f"{rez.zapremina/1e6:.3f} Mm³")
+                c3.metric("wz (visina vrha)", f"{rez.wz:.1f} m")
+                c4.metric("k (širina)", f"{rez.k:.1f} m")
+                c5.metric("Distanca od CM", f"{rez.distanca:.0f} m")
 
-        progress.progress(1.0, text="GA završen ✅")
+                c6, c7, c8, c9 = st.columns(4)
+                c6.metric("c1 transport", f"{rez.c1:,.0f}")
+                c7.metric("c2 iskopavanje", f"{rez.c2:,.0f}")
+                c8.metric("c3 zemljište", f"{rez.c3:,.0f}")
+                c9.metric("Unutar zone", "✅ Da" if rez.unutar_zone else "❌ Ne")
 
+                if rez.zone:
+                    st.caption(f"Zone koje kupa pokriva: **{rez.zone}**")
+
+        # ================================================================
+        # NAČIN 2: Monte Carlo
+        # ================================================================
+        else:
+            with st.status("🎲 Monte Carlo generisanje tačaka...", expanded=True) as status:
+                sve_dobre = []
+                for rep in range(1, n_ponavljanja + 1):
+                    st.write(f"Ponavljanje {rep}/{n_ponavljanja}...")
+                    tacke = generiši_tačke(
+                        n=n_tacaka,
+                        x_range=granice.x_range,
+                        y_range=granice.y_range,
+                        z_range=granice.z_range,
+                        zona_x=granice.x_poly,
+                        zona_y=granice.y_poly,
+                        lose_zone=podaci.lose_zone,
+                    )
+                    for j, tacka in enumerate(tacke):
+                        wx, wy, wz = float(tacka[0]), float(tacka[1]), float(tacka[2])
+                        rez_k = zapremina_kupe(wx, wy, wz, ugao, 0.001,
+                                              podaci.parametri.nadmorska_visina,
+                                              podaci.teren, granice.x_poly, granice.y_poly)
+                        if (rez_k.zapremina < 40_000_000 and
+                                rez_k.intersect_surface is not None and
+                                rez_k.intersect_surface.vertices.shape[0] > 0):
+                            sve_dobre.append((f"p_{j+1}_{rep}", wx, wy, wz))
+
+                status.update(
+                    label=f"✅ Monte Carlo — {len(sve_dobre)} dobrih tačaka",
+                    state="complete",
+                )
+
+            if not sve_dobre:
+                st.warning("Nema dobrih tačaka. Povećaj broj tačaka ili provjeri parametre.")
+                st.stop()
+
+            progress = st.progress(0, text="Pokretanje GA...")
+            n_t = len(sve_dobre)
+            for i, (naziv, wx, wy, wz) in enumerate(sve_dobre):
+                progress.progress((i + 1) / n_t,
+                                   text=f"GA tačka {i+1}/{n_t}: ({wx:.0f}, {wy:.0f})")
+                rez = optimizuj_tacku(naziv, wx, wy, ctx, opcije, verzija)
+                if rez:
+                    svi_rez.append(rez)
+                    if rez.unutar_zone:
+                        validni_rez.append(rez)
+            progress.progress(1.0, text="GA završen ✅")
+
+        # --- Sažetak i čuvanje ---
         st.session_state.rezultati = svi_rez
         st.session_state.validni   = validni_rez
 
-        # Kratki sažetak
+        st.divider()
         col1, col2, col3 = st.columns(3)
-        col1.metric("Monte Carlo dobrih", len(sve_dobre))
-        col2.metric("GA rezultata", len(svi_rez))
-        col3.metric("Validnih (final)", len(validni_rez))
-
+        col1.metric("GA rezultata ukupno", len(svi_rez))
+        col2.metric("Validnih (unutar zone)", len(validni_rez))
         if validni_rez:
             best = min(validni_rez, key=lambda r: r.f_vrednost)
-            st.success(f"Najbolja lokacija: **{best.naziv}** — "
-                       f"f={best.f_vrednost:.4f}, V={best.zapremina/1e6:.2f} Mm³, "
-                       f"zona: {best.zone or '—'}")
+            col3.metric("Najmanji f", f"{best.f_vrednost:.4f}")
+            st.success(
+                f"Najbolja lokacija: **{best.naziv}** — "
+                f"f={best.f_vrednost:.4f}, V={best.zapremina/1e6:.2f} Mm³, "
+                f"zona: {best.zone or '—'}"
+            )
+        st.info("Detalji i mapa dostupni u tabovima **📊 Rezultati** i **🔍 Detalji kupe**.")
+
     else:
-        st.info("Podesi parametre u sidebar-u i pritisni **▶ Pokreni optimizaciju**.")
+        if nacin_rada == "📍 Konkretna tačka":
+            st.info(
+                "Unesi koordinate tačke u sidebar-u i pritisni **▶ Pokreni optimizaciju**. "
+                "GA će pronaći optimalnu visinu i širinu kupe tačno na toj poziciji."
+            )
+        else:
+            st.info("Podesi parametre u sidebar-u i pritisni **▶ Pokreni optimizaciju**.")
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +733,9 @@ with tab_rezultati:
                 podaci.teren.vertices,
                 podaci.granice.x_poly,
                 podaci.granice.y_poly,
+                dobre_zone=podaci.dobre_zone,
+                lose_zone=podaci.lose_zone,
+                centar_masa=podaci.centar_masa,
             )
             st.plotly_chart(fig, use_container_width=True)
 
