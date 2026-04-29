@@ -68,10 +68,14 @@ class DodatniParametri:
     """Ulazni parametri koji se čitaju iz DodatniUlazniParametri.txt.
 
     Odgovara uvozDodatnihUlaznihParametara.m + tri setter poziva.
+
+    NAPOMENA: Defaults su neutralne vrijednosti (None) koje se
+    automatski izračunavaju iz terena u ucitaj_sve() ako nisu
+    eksplicitno zadane u fajlu. Na taj način kod radi za bilo koji teren.
     """
-    nadmorska_visina: float = 140.0    # mv — visina baze kupe
+    nadmorska_visina: float = None     # mv — izračunava se iz z_min terena ako nije u fajlu
     broj_generacija: int = 3           # MaxGeneration za GA
-    uslov_distance: float = 2000.0     # max dozvoljeno rastojanje od centra masa
+    uslov_distance: float = None       # izračunava se iz dijagonale zone ako nije u fajlu
 
 
 @dataclass
@@ -359,5 +363,27 @@ def ucitaj_sve(
     podaci.parametri = ucitaj_dodatne_parametre(putanja_parametri)
 
     print("-" * 50)
+
+    # Automatski izračunaj mnv i uslov_distance iz podataka terena
+    # ako nisu zadani u DodatniUlazniParametri.txt
+    import math as _math
+    if podaci.parametri.nadmorska_visina is None:
+        if podaci.teren is not None:
+            z_min_auto = float(podaci.teren.vertices[:, 2].min())
+            podaci.parametri.nadmorska_visina = z_min_auto
+            print(f"  Auto mnv: {z_min_auto:.1f} m (z_min terena)")
+        else:
+            podaci.parametri.nadmorska_visina = 0.0
+
+    if podaci.parametri.uslov_distance is None:
+        if podaci.granice is not None:
+            dx = podaci.granice.x_range[1] - podaci.granice.x_range[0]
+            dy = podaci.granice.y_range[1] - podaci.granice.y_range[0]
+            dijagonala = _math.sqrt(dx**2 + dy**2)
+            podaci.parametri.uslov_distance = dijagonala
+            print(f"  Auto uslov_distance: {dijagonala:.0f} m (dijagonala zone)")
+        else:
+            podaci.parametri.uslov_distance = 999999.0
+
     print("Učitavanje završeno.\n")
     return podaci
