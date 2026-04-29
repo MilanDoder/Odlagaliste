@@ -679,7 +679,12 @@ with st.sidebar:
     min_v = st.number_input("Min zapremina (m³)", value=100_000.0, step=10_000.0, format="%.0f")
     max_v = st.number_input("Max zapremina (m³)", value=50_000_000.0, step=1_000_000.0, format="%.0f")
     populacija = st.slider("GA populacija", 10, 100, 30, 5)
-    verzija = st.radio("Bounds verzija", ["buvac", "v1"], index=0)
+    verzija = st.radio(
+        "Bounds verzija",
+        ["auto", "buvac", "v1"],
+        index=0,
+        help="auto = iz terena (preporučeno) | buvac = originalni Buvac | v1 = starija verzija",
+    )
 
     st.divider()
     st.header("Način rada")
@@ -698,9 +703,19 @@ with st.sidebar:
         konk_wz = None
     else:
         st.caption("Unesi koordinate tačke na kojoj hoćeš da optimizuješ kupu.")
-        konk_wx = st.number_input("X koordinata", value=6413080.0, format="%.2f")
-        konk_wy = st.number_input("Y koordinata", value=4970217.0, format="%.2f")
-        konk_wz = st.number_input("Z koordinata (visina)", value=185.0, format="%.2f",
+        # Default koordinate — centar učitanog terena/zone, ne Buvac
+        if st.session_state.podaci is not None:
+            _g = st.session_state.podaci.granice
+            _cm = st.session_state.podaci.centar_masa
+            _def_x = float(_cm[0]) if _cm is not None else (_g.x_range[0] + _g.x_range[1]) / 2
+            _def_y = float(_cm[1]) if _cm is not None else (_g.y_range[0] + _g.y_range[1]) / 2
+            _def_z = float(st.session_state.podaci.parametri.nadmorska_visina or
+                          st.session_state.podaci.teren.vertices[:, 2].mean())
+        else:
+            _def_x, _def_y, _def_z = 0.0, 0.0, 0.0
+        konk_wx = st.number_input("X koordinata", value=_def_x, format="%.2f")
+        konk_wy = st.number_input("Y koordinata", value=_def_y, format="%.2f")
+        konk_wz = st.number_input("Z koordinata (visina)", value=_def_z, format="%.2f",
                                    help="Početna visina — GA će optimizovati wz unutar bounds-a")
         n_tacaka = 1
         n_ponavljanja = 1
@@ -927,7 +942,12 @@ with tab_optimizacija:
                     )
                     for j, tacka in enumerate(tacke):
                         wx, wy, wz = float(tacka[0]), float(tacka[1]), float(tacka[2])
-                        rez_k = zapremina_kupe(wx, wy, wz, ugao, 0.001,
+                        # k_test = 5% dijagonale zone (realna minimalna vrijednost)
+                        _dx = granice.x_range[1] - granice.x_range[0]
+                        _dy = granice.y_range[1] - granice.y_range[0]
+                        import numpy as _npk
+                        k_test = max(10.0, float(_npk.sqrt(_dx**2 + _dy**2)) * 0.03)
+                        rez_k = zapremina_kupe(wx, wy, wz, ugao, k_test,
                                               podaci.parametri.nadmorska_visina,
                                               podaci.teren, granice.x_poly, granice.y_poly)
                         if (rez_k.zapremina < 40_000_000 and
