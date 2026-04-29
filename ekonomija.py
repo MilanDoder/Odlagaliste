@@ -184,27 +184,36 @@ def racunaj_troskove(
     distanca: float,
     wz: float,
     ekonomska_cena: float,
+    mnv: float = None,
 ) -> tuple[float, float, float]:
     """Računa tri troškovne komponente za jedan rezultat GA.
 
     MATLAB ekvivalent (iz IzvrsniKodBuvac.m post-procesiranje):
         c1 = zapreminaK * (d1/1000) * 0.8
-        c2 = zapreminaK * (((wz - 90) / 0.08 * 1.6) / 1000) * 1.2
+        c2 = zapreminaK * (((wz - mnv) / 0.08 * 1.6) / 1000) * 1.2
         c3 = getEkonomskaVrednostZemljista()
+
+    NAPOMENA: U originalnom MATLAB kodu stajalo je (wz - 90) gdje je 90
+    bila zakucana nadmorska visina baze Buvac kopa. Ovdje koristimo mnv
+    (nadmorska visina baze) iz DodatniUlazniParametri — ispravno za
+    bilo koji teren.
 
     Args:
         zapremina:      zapremina kupe u m³
         distanca:       distanca od centra masa u m
         wz:             visina vrha kupe (Z koordinata)
         ekonomska_cena: cijena zemljišta iz ekonomska_cijena()
+        mnv:            nadmorska visina baze kupe (iz DodatniParametri)
+                        Ako None, koristi se 0 (neutralno)
 
     Returns:
         (c1, c2, c3)
         c1 = transportni trošak (zapremina × distanca)
-        c2 = trošak iskapanja   (zapremina × visina)
+        c2 = trošak iskapanja   (zapremina × visinska razlika)
         c3 = vrijednost zemljišta (ekonomska cijena)
     """
+    referentna_visina = mnv if mnv is not None else 0.0
     c1 = zapremina * (distanca / 1000) * 0.8
-    c2 = zapremina * (((wz - 90) / 0.08 * 1.6) / 1000) * 1.2
+    c2 = zapremina * (((wz - referentna_visina) / 0.08 * 1.6) / 1000) * 1.2
     c3 = ekonomska_cena
     return c1, c2, c3
