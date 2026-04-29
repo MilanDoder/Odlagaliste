@@ -60,31 +60,61 @@ class GAKontekst:
 
 def get_bounds(
     wx: float, wy: float,
-    verzija: str = "buvac",
+    z_min: float = None,
+    z_max: float = None,
+    zona_dijagonala: float = None,
+    verzija: str = "auto",
 ) -> tuple[list[float], list[float]]:
     """Vraća donje i gornje granice za GA varijable.
 
-    MATLAB ekvivalent (IzvrsniKodBuvac.m):
-        lb = [175, 80,  pointX, pointY]
-        ub = [280, 350, pointX, pointY]
+    Bounds se automatski izvode iz podataka terena kada su dostupni.
+    Na taj način GA radi ispravno za BILO KOJI teren, ne samo Buvac.
 
-    MATLAB ekvivalent (IzvrsniKod.m — starija verzija):
-        lb = [155, 70,  pointX, pointY]
-        ub = [210, 120, pointX, pointY]
+    GA varijable:
+        x[0] = wz   — visina vrha kupe (između z_min i z_max terena)
+        x[1] = k    — širina kupe (između 5% i 40% dijagonale zone)
+        x[2] = wx   — X koordinata (fiksna)
+        x[3] = wy   — Y koordinata (fiksna)
 
     Args:
-        wx, wy:   koordinate tačke (fiksirani bounds za var 2 i 3)
-        verzija:  "buvac" (IzvrsniKodBuvac) ili "v1" (IzvrsniKod)
+        wx, wy:          koordinate tačke (fiksirani bounds za var 2 i 3)
+        z_min:           minimalna visina terena (iz GraniceZone.z_range[0])
+        z_max:           maksimalna visina terena (iz GraniceZone.z_range[1])
+        zona_dijagonala: dijagonala zone interesa u metrima
+        verzija:         "auto" (iz terena), "buvac", "v1"
 
     Returns:
         (lb, ub) — liste dužine 4
     """
-    if verzija == "buvac":
+    if verzija == "auto" and z_min is not None and z_max is not None:
+        # Bounds izvedeni iz podataka terena — radi za bilo koji teren
+        z_raspon = z_max - z_min
+
+        # wz: od 20% iznad z_min do z_max + 30% raspona (vrh kupe može biti iznad terena)
+        wz_min = z_min + z_raspon * 0.1
+        wz_max = z_max + z_raspon * 0.5
+
+        # k: od 5% do 40% dijagonale zone interesa
+        if zona_dijagonala is not None:
+            k_min = max(10.0, zona_dijagonala * 0.02)
+            k_max = zona_dijagonala * 0.35
+        else:
+            # Fallback: proporcionalno sa z_rasponom
+            k_min = max(10.0, z_raspon * 0.3)
+            k_max = z_raspon * 5.0
+
+        lb = [wz_min, k_min, wx, wy]
+        ub = [wz_max, k_max, wx, wy]
+
+    elif verzija == "buvac":
+        # Originalni MATLAB bounds — samo za Buvac kop
         lb = [175.0, 80.0,  wx, wy]
         ub = [280.0, 350.0, wx, wy]
+
     else:  # v1
         lb = [155.0, 70.0,  wx, wy]
         ub = [210.0, 120.0, wx, wy]
+
     return lb, ub
 
 
