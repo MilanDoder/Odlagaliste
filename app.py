@@ -281,53 +281,180 @@ def plotly_rezultati(
     return fig
 
 
-def plotly_kupa_3d(rez: RezultatTacke) -> go.Figure:
-    """3D prikaz konture jedne kupe."""
+def plotly_kupa_3d(
+    rez: RezultatTacke,
+    teren_vertices: np.ndarray = None,
+    teren_faces: np.ndarray = None,
+) -> go.Figure:
+    """3D prikaz kupe i terena ispod nje.
+
+    Teren — smeđe-zelena površina (Plotly Mesh3d)
+    Kupa  — gornja kontura zelena, donja plava, bočne linije sive
+    """
     fig = go.Figure()
 
+    # ---- Teren ----
+    if teren_vertices is not None and teren_faces is not None:
+        # Decimiramo teren oko kupe — uzimamo tačke u radijusu od kupe
+        if rez.xx1 is not None:
+            cx = float(rez.wx)
+            cy = float(rez.wy)
+            # Radijus prikaza = 3× širina kupe (k) + mali buffer
+            r_prikaz = float(rez.k) * 4.0 + 500.0
+            dist = np.sqrt((teren_vertices[:, 0] - cx)**2 +
+                           (teren_vertices[:, 1] - cy)**2)
+            maska_v = dist < r_prikaz
+            # Preslikaj indekse (samo trouglovi gdje su sva 3 vrha unutar maske)
+            idx_mapa = np.full(len(teren_vertices), -1, dtype=int)
+            idx_mapa[maska_v] = np.arange(maska_v.sum())
+            v_lok = teren_vertices[maska_v]
+
+            maska_f = (
+                maska_v[teren_faces[:, 0]] &
+                maska_v[teren_faces[:, 1]] &
+                maska_v[teren_faces[:, 2]]
+            )
+            f_lok = teren_faces[maska_f]
+            f_lok = idx_mapa[f_lok]
+        else:
+            korak = max(1, len(teren_vertices) // 5000)
+            v_lok = teren_vertices[::korak]
+            f_lok = None
+
+        if len(v_lok) >= 3:
+            z_min = v_lok[:, 2].min()
+            z_max = v_lok[:, 2].max()
+            z_norm = (v_lok[:, 2] - z_min) / max(z_max - z_min, 1)
+
+            mesh_kwargs = dict(
+                x=v_lok[:, 0],
+                y=v_lok[:, 1],
+                z=v_lok[:, 2],
+                intensity=z_norm,
+                colorscale=[
+                    [0.0,  "#2d5a1b"],   # tamno zelena — nizina
+                    [0.3,  "#5a8c3c"],   # srednje zelena
+                    [0.6,  "#8B7355"],   # smeđa — srednja visina
+                    [0.85, "#A0896B"],   # svjetlo smeđa
+                    [1.0,  "#C8B89A"],   # pijesak — vrh
+                ],
+                showscale=False,
+                opacity=0.85,
+                name="Teren",
+                hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Z: %{z:.1f} m<extra>Teren</extra>",
+            )
+            if f_lok is not None and len(f_lok) > 0:
+                mesh_kwargs["i"] = f_lok[:, 0]
+                mesh_kwargs["j"] = f_lok[:, 1]
+                mesh_kwargs["k"] = f_lok[:, 2]
+            else:
+                # Bez lica — samo oblak tačaka kao površina
+                from scipy.spatial import Delaunay as _D
+                try:
+                    tri = _D(v_lok[:, :2])
+                    mesh_kwargs["i"] = tri.simplices[:, 0]
+                    mesh_kwargs["j"] = tri.simplices[:, 1]
+                    mesh_kwargs["k"] = tri.simplices[:, 2]
+                except Exception:
+                    pass
+
+            fig.add_trace(go.Mesh3d(**mesh_kwargs))
+
+    # ---- Površina kupe (ispunjena) ----
+    if rez.xx1 is not None and rez.xx2 is not None:
+        # Konstruiši mrežu kupe od 9 tačaka gornje + 9 donje konture
+        n_k = len(rez.xx1)
+        x_kupa = np.concatenate([rez.xx1, rez.xx2])
+        y_kupa = np.concatenate([rez.yy1, rez.yy2])
+        z_kupa = np.concatenate([rez.zz1, rez.zz2])
+
+        # Lica kupe — trapezoidni panel između gornje i donje
+        i_lica, j_lica, k_lica = [], [], []
+        for idx in range(n_k - 1):
+            # Gornji trougao panela
+            i_lica.append(idx);          j_lica.append(idx + 1);          k_lica.append(idx + n_k)
+            # Donji trougao panela
+            i_lica.append(idx + 1);     j_lica.append(idx + n_k + 1);    k_lica.append(idx + n_k)
+
+        fig.add_trace(go.Mesh3d(
+            x=x_kupa, y=y_kupa, z=z_kupa,
+            i=i_lica, j=j_lica, k=k_lica,
+            color="#FF8C00",
+            opacity=0.45,
+            name="Kupa (površina)",
+            showscale=False,
+            hovertemplate=f"<b>Kupa: {rez.naziv}</b><br>Z: %{{z:.1f}} m<extra></extra>",
+        ))
+
+    # ---- Gornja kontura kupe ----
     if rez.xx1 is not None:
-        # Gornja kontura
         fig.add_trace(go.Scatter3d(
             x=np.append(rez.xx1, rez.xx1[0]),
             y=np.append(rez.yy1, rez.yy1[0]),
             z=np.append(rez.zz1, rez.zz1[0]),
             mode="lines",
-            line=dict(color="#1D9E75", width=4),
-            name="Gornja kontura",
+            line=dict(color="#00FF88", width=5),
+            name="Gornja kontura kupe",
         ))
 
+    # ---- Donja kontura kupe ----
     if rez.xx2 is not None:
-        # Donja kontura
         fig.add_trace(go.Scatter3d(
             x=np.append(rez.xx2, rez.xx2[0]),
             y=np.append(rez.yy2, rez.yy2[0]),
             z=np.append(rez.zz2, rez.zz2[0]),
             mode="lines",
-            line=dict(color="#378ADD", width=4),
-            name="Donja kontura",
+            line=dict(color="#00AAFF", width=5),
+            name="Donja kontura kupe",
         ))
 
-    # Vertikalne linije između kontura
+    # ---- Bočne linije kupe (gore→dolje) ----
     if rez.xx1 is not None and rez.xx2 is not None:
-        for i in range(min(len(rez.xx1), len(rez.xx2))):
+        n_k = min(len(rez.xx1), len(rez.xx2))
+        for i in range(n_k):
             fig.add_trace(go.Scatter3d(
                 x=[rez.xx1[i], rez.xx2[i]],
                 y=[rez.yy1[i], rez.yy2[i]],
                 z=[rez.zz1[i], rez.zz2[i]],
                 mode="lines",
-                line=dict(color="#888", width=1),
+                line=dict(color="#FFAA00", width=2),
                 showlegend=False,
             ))
 
+    # ---- Vrh kupe (centar gornje konture) ----
+    fig.add_trace(go.Scatter3d(
+        x=[rez.wx], y=[rez.wy], z=[rez.wz],
+        mode="markers+text",
+        marker=dict(size=8, color="#FF0000", symbol="diamond"),
+        text=[f"wz={rez.wz:.1f}m"],
+        textposition="top center",
+        textfont=dict(color="#FF4444", size=12),
+        name="Vrh kupe",
+    ))
+
     fig.update_layout(
-        title=f"Kupa: {rez.naziv}  (V={rez.zapremina/1e6:.2f} Mm³)",
-        scene=dict(
-            xaxis_title="X", yaxis_title="Y", zaxis_title="Z (m)",
-            aspectmode="data",
+        title=dict(
+            text=f"3D prikaz kupe: {rez.naziv} — V={rez.zapremina/1e6:.2f} Mm³ | wz={rez.wz:.1f}m | k={rez.k:.1f}m",
+            font=dict(size=14),
         ),
-        height=450,
-        margin=dict(l=0, r=0, t=40, b=0),
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Visina (m)",
+            aspectmode="data",
+            bgcolor="rgba(10,10,20,1)",
+            xaxis=dict(gridcolor="#333", showbackground=True, backgroundcolor="rgba(10,10,20,1)"),
+            yaxis=dict(gridcolor="#333", showbackground=True, backgroundcolor="rgba(10,10,20,1)"),
+            zaxis=dict(gridcolor="#333", showbackground=True, backgroundcolor="rgba(10,10,20,1)"),
+        ),
+        height=600,
+        margin=dict(l=0, r=0, t=50, b=0),
         showlegend=True,
+        legend=dict(
+            bgcolor="rgba(20,20,30,0.8)",
+            font=dict(size=11),
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
@@ -803,7 +930,9 @@ with tab_detalji:
         st.caption(f"Zone: {rez.zone or '—'}")
 
         if go and rez.xx1 is not None:
-            fig3d = plotly_kupa_3d(rez)
+            teren_v = st.session_state.podaci.teren.vertices if st.session_state.podaci else None
+            teren_f = st.session_state.podaci.teren.faces if st.session_state.podaci else None
+            fig3d = plotly_kupa_3d(rez, teren_vertices=teren_v, teren_faces=teren_f)
             st.plotly_chart(fig3d, use_container_width=True)
         else:
             st.info("Instaliraj plotly za 3D prikaz kupe.")
