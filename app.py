@@ -61,29 +61,165 @@ def spremi_upload(uploaded_file) -> Path:
     return Path(tmp.name)
 
 
-def plotly_teren_2d(teren_vertices: np.ndarray, naslov: str = "Teren") -> go.Figure:
-    """2D scatter prikaz tačaka terena s bojom po visini."""
-    fig = go.Figure(go.Scattergl(
-        x=teren_vertices[:, 0],
-        y=teren_vertices[:, 1],
-        mode="markers",
-        marker=dict(
-            size=2,
-            color=teren_vertices[:, 2],
-            colorscale="Viridis",
-            showscale=True,
-            colorbar=dict(title="Visina (m)"),
+def plotly_teren_3d(
+    teren_vertices: np.ndarray,
+    teren_faces: np.ndarray,
+    centar_masa: np.ndarray = None,
+    zona_x: np.ndarray = None,
+    zona_y: np.ndarray = None,
+    naslov: str = "3D prikaz terena",
+) -> go.Figure:
+    """Interaktivni 3D prikaz terena kao triangulisane površine.
+
+    Teren — Mesh3d bojana po visini (zelena→smeđa→pijesak)
+    Centar masa — crvena zvjezdica
+    Granica zone — žuta linija na visini terena
+    """
+    fig = go.Figure()
+
+    # Decimiraj za prikaz ako je previše tačaka (browser limit)
+    v = teren_vertices
+    f = teren_faces
+    if len(v) > 20000:
+        # Uzimamo svaku N-tu tačku i samo trouglove koji koriste te tačke
+        korak = max(2, len(v) // 15000)
+        maska = np.zeros(len(v), dtype=bool)
+        maska[::korak] = True
+        idx_mapa = np.full(len(v), -1, dtype=int)
+        idx_mapa[maska] = np.arange(maska.sum())
+        v = teren_vertices[maska]
+        maska_f = maska[f[:, 0]] & maska[f[:, 1]] & maska[f[:, 2]]
+        f = idx_mapa[teren_faces[maska_f]]
+
+    z_min = v[:, 2].min()
+    z_max = v[:, 2].max()
+    z_range = max(z_max - z_min, 1.0)
+    intensity = (v[:, 2] - z_min) / z_range
+
+    # Teren — Mesh3d
+    fig.add_trace(go.Mesh3d(
+        x=v[:, 0],
+        y=v[:, 1],
+        z=v[:, 2],
+        i=f[:, 0],
+        j=f[:, 1],
+        k=f[:, 2],
+        intensity=intensity,
+        colorscale=[
+            [0.00, "#1a4a0a"],   # tamno zelena — najniža tačka
+            [0.25, "#3a7a1a"],   # zelena
+            [0.50, "#7a6040"],   # smeđa — sredina
+            [0.75, "#a08060"],   # svjetla smeđa
+            [1.00, "#d4c4a0"],   # pijesak — vrh
+        ],
+        showscale=True,
+        colorbar=dict(
+            title=dict(text="Visina (m)", side="right"),
+            tickvals=[0, 0.25, 0.5, 0.75, 1.0],
+            ticktext=[
+                f"{z_min:.0f}m",
+                f"{z_min + z_range*0.25:.0f}m",
+                f"{z_min + z_range*0.50:.0f}m",
+                f"{z_min + z_range*0.75:.0f}m",
+                f"{z_max:.0f}m",
+            ],
+            len=0.6,
         ),
-        hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Z: %{customdata:.1f}m",
-        customdata=teren_vertices[:, 2],
+        opacity=1.0,
+        flatshading=False,
+        lighting=dict(
+            ambient=0.6,
+            diffuse=0.8,
+            specular=0.2,
+            roughness=0.8,
+        ),
+        lightposition=dict(x=1, y=1, z=2),
         name="Teren",
+        hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Z: %{z:.1f} m<extra>Teren</extra>",
     ))
+
+    # Granica zone — linija na visini terena
+    if zona_x is not None and zona_y is not None and len(zona_x) >= 2:
+        # Interpoliraj Z iz terena za svaku tačku granice
+        from scipy.spatial import cKDTree
+        tree = cKDTree(teren_vertices[:, :2])
+        _, idx = tree.query(np.column_stack([zona_x, zona_y]))
+        zona_z = teren_vertices[idx, 2] + 5.0   # malo iznad terena da se vidi
+
+        fig.add_trace(go.Scatter3d(
+            x=np.append(zona_x, zona_x[0]),
+            y=np.append(zona_y, zona_y[0]),
+            z=np.append(zona_z, zona_z[0]),
+            mode="lines",
+            line=dict(color="#FFD700", width=5),
+            name="Granica zone interesa",
+            hovertemplate="Granica interesne zone<extra></extra>",
+        ))
+
+    # Centar masa — crvena zvjezdica na terenu
+    if centar_masa is not None:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(teren_vertices[:, :2])
+        _, idx_cm = tree.query([[float(centar_masa[0]), float(centar_masa[1])]])
+        cm_z = float(teren_vertices[idx_cm[0], 2]) + 10.0
+
+        fig.add_trace(go.Scatter3d(
+            x=[float(centar_masa[0])],
+            y=[float(centar_masa[1])],
+            z=[cm_z],
+            mode="markers+text",
+            marker=dict(size=10, color="#FF00FF", symbol="diamond",
+                        line=dict(width=2, color="white")),
+            text=["Centar masa"],
+            textposition="top center",
+            textfont=dict(color="#FF00FF", size=13),
+            name="Centar masa",
+            hovertemplate=(
+                f"<b>Centar masa</b><br>"
+                f"X: {float(centar_masa[0]):.0f}<br>"
+                f"Y: {float(centar_masa[1]):.0f}<br>"
+                f"Z terena: {cm_z:.1f} m<extra></extra>"
+            ),
+        ))
+
     fig.update_layout(
-        title=naslov,
-        xaxis_title="X koordinata",
-        yaxis_title="Y koordinata",
-        height=450,
-        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(text=naslov, font=dict(size=15)),
+        scene=dict(
+            xaxis_title="X koordinata",
+            yaxis_title="Y koordinata",
+            zaxis_title="Visina (m)",
+            aspectmode="data",
+            bgcolor="rgba(5,10,20,1)",
+            xaxis=dict(
+                showbackground=True,
+                backgroundcolor="rgba(5,10,20,1)",
+                gridcolor="#223",
+                title_font=dict(size=11),
+            ),
+            yaxis=dict(
+                showbackground=True,
+                backgroundcolor="rgba(5,10,20,1)",
+                gridcolor="#223",
+                title_font=dict(size=11),
+            ),
+            zaxis=dict(
+                showbackground=True,
+                backgroundcolor="rgba(5,10,20,1)",
+                gridcolor="#223",
+                title_font=dict(size=11),
+            ),
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=0.8),
+                up=dict(x=0, y=0, z=1),
+            ),
+        ),
+        height=650,
+        margin=dict(l=0, r=0, t=50, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(
+            bgcolor="rgba(20,20,30,0.8)",
+            font=dict(size=11),
+        ),
     )
     return fig
 
@@ -633,8 +769,23 @@ with tab_teren:
             col4.metric("mv (baza kupe)", f"{podaci.parametri.nadmorska_visina} m")
 
             if go:
-                fig = plotly_teren_2d(podaci.teren.vertices, "Teren — prikaz po visini")
-                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    "💡 Rotiraj mišem (lijevo dugme), zumiraj (scroll), "
+                    "pomjeri (desno dugme). Hover mišem za koordinate i visinu."
+                )
+                fig3d_teren = plotly_teren_3d(
+                    teren_vertices=podaci.teren.vertices,
+                    teren_faces=podaci.teren.faces,
+                    centar_masa=podaci.centar_masa,
+                    zona_x=podaci.granice.x_poly,
+                    zona_y=podaci.granice.y_poly,
+                    naslov=(
+                        f"3D teren — {podaci.teren.vertices.shape[0]:,} tačaka | "
+                        f"Z: {podaci.teren.vertices[:,2].min():.0f}m – "
+                        f"{podaci.teren.vertices[:,2].max():.0f}m"
+                    ),
+                )
+                st.plotly_chart(fig3d_teren, use_container_width=True)
             else:
                 st.info("Instalirajte plotly za vizualizaciju: pip install plotly")
     else:
