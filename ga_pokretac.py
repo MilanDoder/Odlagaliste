@@ -141,7 +141,19 @@ def optimizuj_tacku(
         RezultatTacke ako GA nađe rješenje (fval > 0),
         None ako GA ne konvergira ili fval <= 0
     """
-    lb, ub = get_bounds(wx, wy, verzija=verzija)
+    # Bounds izvedeni iz terena — radi za bilo koji teren
+    import numpy as _np
+    z_min = float(ctx.teren.vertices[:, 2].min()) if ctx.teren is not None else None
+    z_max = float(ctx.teren.vertices[:, 2].max()) if ctx.teren is not None else None
+    # Dijagonala zone interesa
+    if ctx.zona_x is not None and len(ctx.zona_x) >= 2:
+        dx = ctx.zona_x.max() - ctx.zona_x.min()
+        dy = ctx.zona_y.max() - ctx.zona_y.min()
+        zona_dijagonala = float(_np.sqrt(dx**2 + dy**2))
+    else:
+        zona_dijagonala = None
+    lb, ub = get_bounds(wx, wy, z_min=z_min, z_max=z_max,
+                        zona_dijagonala=zona_dijagonala, verzija=verzija)
 
     # Bounds lista za scipy: [(lb0,ub0), (lb1,ub1), ...]
     bounds = list(zip(lb, ub))
@@ -197,7 +209,8 @@ def optimizuj_tacku(
         return None
 
     distanca = distanca_od_centra_masa(wx, wy, ctx.centar_masa)
-    c1, c2, c3 = racunaj_troskove(zapremina, distanca, wz_opt, rez_kupe.ekonomska_cena)
+    c1, c2, c3 = racunaj_troskove(zapremina, distanca, wz_opt, rez_kupe.ekonomska_cena,
+                                   mnv=ctx.mnv)
 
     # Provjera unutar zone (unutarInteresneZone)
     unutar, _ = unutar_interesne_zone(
