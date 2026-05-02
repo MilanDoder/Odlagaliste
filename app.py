@@ -1673,7 +1673,7 @@ def _generiši_teren_konkretan(
 
 
 def _frustum_na_terenu_gore(
-    cx, cy,
+    cx, cy, z_unos,
     r_top, r_base, alpha_deg,
     x_min=4_969_400.0, x_max=4_970_500.0,
     y_min=6_387_000.0, y_max=6_389_000.0,
@@ -1682,10 +1682,13 @@ def _frustum_na_terenu_gore(
 ):
     """
     Frustum RASTE GORE od tačke na terenu:
-      - Z_base  = Z_teren interpolovano u (cx, cy) — baza sjedi na terenu
-      - H       = (r_base - r_top) / tan(alpha)     — visina iz ugla i radijusa
-      - Z_top   = Z_base + H                         — vrh frustuma
-      - Presek sa terenom = krug baze na terenu (egzaktno)
+      - z_unos  = Z koordinata koju korisnik unosi
+      - Z_base  = z_unos (korisnikov unos) — baza frustuma
+      - Provjera: baza mora biti <= Z_min_terena_u_zoni - 10m
+                  Ako nije, automatski se koriguje na Z_min - 10m
+      - H       = (r_base - r_top) / tan(alpha)
+      - Z_top   = Z_base + H
+      - Presek sa terenom = tacke terena unutar baze frustuma
       - Zapremina frustuma = egzaktna formula
       - Bocna povrsina    = egzaktna formula
 
@@ -1707,16 +1710,25 @@ def _frustum_na_terenu_gore(
         x_min, x_max, y_min, y_max, nx, ny, amp, freq_x, freq_y
     )
 
-    # --- Z_base: visina terena u (cx, cy) ---
+    # --- Z_teren u centru (samo za info) ---
     _zv = np.ravel(interp([[cx, cy]]))[0]
     if np.isnan(_zv):
         dist0 = np.sqrt((X_t - cx)**2 + (Y_t - cy)**2)
         _zv = float(Z_t.ravel()[np.argmin(dist0.ravel())])
-    z_base = float(_zv)
+    z_teren_centar = float(_zv)
+
+    # --- Najniža tačka terena u zoni frustuma ---
+    dist_c     = np.sqrt((X_t - cx)**2 + (Y_t - cy)**2)
+    zona_mask  = dist_c <= r_base * 1.1
+    z_min_zona = float(Z_t[zona_mask].min()) if zona_mask.any() else float(Z_t.min())
+    z_granica  = z_min_zona - 10.0   # baza mora biti <= ovo
+
+    # --- Provjera i korekcija Z_base ---
+    z_base_unos    = float(z_unos)
+    korekcija_flag = z_base_unos > z_granica
+    z_base         = z_granica if korekcija_flag else z_base_unos
 
     # --- Geometrija frustuma (ide gore) ---
-    # H iz ugla: r(z) = r_base - (z - z_base)*tan(alpha)
-    # Na vrhu (z=z_top): r = r_top => H = (r_base - r_top)/tan(alpha)
     if abs(np.tan(alpha_rad)) < 1e-9:
         raise ValueError("Ugao ne smije biti 0°")
     H        = (r_base - r_top) / np.tan(alpha_rad)
@@ -1740,6 +1752,9 @@ def _frustum_na_terenu_gore(
     A_ukupno  = A_gornji + A_bocna
 
     proracun = dict(
+        z_unos=z_base_unos, z_teren_centar=z_teren_centar,
+        z_min_zona=z_min_zona, z_granica=z_granica,
+        korekcija=korekcija_flag,
         z_base=z_base, z_top=z_top, H=H,
         r_top=r_top, r_base=r_base, alpha_deg=alpha_deg,
         l_izv=l_izv,
@@ -1982,11 +1997,14 @@ def _frustum_na_terenu_gore(
     # Anotacije
     ax_mpl.scatter([cx], [cy], [z_base],
                    c='#ffaa00', s=55, marker='D', zorder=10,
-                   label='Centar (Z interpolovan)')
+                   label='Centar (Z baze)')
+    z_top_lbl = f'Z_top={z_top:.2f}m'
+    z_base_lbl = (f'Z_base={z_base:.2f}m (korigovano!)' if korekcija_flag
+                  else f'Z_base={z_base:.2f}m')
     ax_mpl.text(cx + r_top*0.2, cy, z_top + H*0.03,
-                f'Z_top={z_top:.2f}m', fontsize=8, color='#116622')
+                z_top_lbl, fontsize=8, color='#116622')
     ax_mpl.text(cx + r_top*0.2, cy, z_base - H*0.06,
-                f'Z_base={z_base:.2f}m', fontsize=8, color='#880000')
+                z_base_lbl, fontsize=8, color='#cc0000' if korekcija_flag else '#880000')
 
     # Poluprecnici
     mid_a = np.pi / 4
@@ -2048,10 +2066,17 @@ def _frustum_na_terenu_gore(
     cbar2.set_label('Visina terena (m)', fontsize=8)
 
     # Tabela ispod grafika
+    korekcija_txt = (f"  *** AUTOMATSKA KOREKCIJA: {z_base_unos:.2f}m → {z_base:.2f}m ***\n"
+                     f"  {'(Najniza tacka terena u zoni)':38s}  {z_min_zona:>10.4f} m\n"
+                     f"  {'Granica (min - 10m)':38s}  {z_granica:>10.4f} m\n"
+                     ) if korekcija_flag else ""
     tekst = (
         f"  {'Pozicija (X, Y)':38s}  ({cx:.0f}, {cy:.0f})\n"
-        f"  {'Z terena (interpolovano)':38s}  {z_base:>10.4f} m\n"
-        f"  {'Vrh frustuma Z_top':38s}  {z_top:>10.4f} m\n"
+        f"  {'Z unos korisnika':38s}  {z_base_unos:>10.4f} m\n"
+        f"  {'Z terena u centru (interp.)':38s}  {z_teren_centar:>10.4f} m\n"
+        f"{korekcija_txt}"
+        f"  {'Z baze frustuma':38s}  {z_base:>10.4f} m\n"
+        f"  {'Z vrha (Z_top)':38s}  {z_top:>10.4f} m\n"
         f"  {'Visina H':38s}  {H:>10.4f} m\n"
         f"  {'Poluugao α':38s}  {alpha_deg:>10.2f} °\n"
         f"  {'Izvodnica l':38s}  {l_izv:>10.4f} m\n"
@@ -2103,6 +2128,10 @@ with tab_frustum_teren:
                                    format="%.2f", key="ft_cx")
         ft_cy    = st.number_input("Centar Y", value=6_388_500.0,
                                    format="%.2f", key="ft_cy")
+        ft_cz    = st.number_input("Baza frustuma Z (m)",
+                                   value=-15.0, format="%.2f", key="ft_cz",
+                                   help="Visina baze frustuma. Automatski se koriguje "
+                                        "ako nije min. 10m ispod najniže tačke terena u zoni.")
         ft_rtop  = st.number_input("Poluprecnik gornjeg kruga R_top (m)",
                                    min_value=0.5, value=5.0, step=0.5, key="ft_rtop")
         ft_rbase = st.number_input("Poluprecnik baze R_base (m)",
@@ -2150,7 +2179,7 @@ with tab_frustum_teren:
         with st.spinner("Interpoliram Z sa terena i generišem prikaz..."):
             try:
                 fig_ft, prac_ft, png_buf = _frustum_na_terenu_gore(
-                    cx=ft_cx, cy=ft_cy,
+                    cx=ft_cx, cy=ft_cy, z_unos=ft_cz,
                     r_top=ft_rtop, r_base=ft_rbase,
                     alpha_deg=ft_alpha,
                     x_min=ft_xmin, x_max=ft_xmax,
@@ -2159,29 +2188,53 @@ with tab_frustum_teren:
                     amp=ft_amp, freq_x=ft_freqx, freq_y=ft_freqy,
                 )
 
-                st.success(
-                    f"Frustum generisan!  "
-                    f"Z_base (teren) = **{prac_ft['z_base']:.4f} m**,  "
-                    f"Z_top = **{prac_ft['z_top']:.4f} m**,  "
+                # --- Provjera korekcije ---
+                if prac_ft['korekcija']:
+                    st.warning(
+                        f"⚠ **Automatska korekcija Z baze!**  \n"
+                        f"Uneseno Z = **{prac_ft['z_unos']:.2f} m** nije dovoljno duboko.  \n"
+                        f"Najniža tačka terena u zoni: **{prac_ft['z_min_zona']:.2f} m**  \n"
+                        f"Minimum potreban (10m ispod): **{prac_ft['z_granica']:.2f} m**  \n"
+                        f"✅ Baza automatski postavljena na: **{prac_ft['z_base']:.2f} m**"
+                    )
+                else:
+                    st.success(
+                        f"✅ Z baze = **{prac_ft['z_base']:.2f} m** — ispravno "
+                        f"(min. 10m ispod najniže tačke terena {prac_ft['z_min_zona']:.2f} m)"
+                    )
+
+                st.info(
+                    f"Z terena u centru (X,Y): **{prac_ft['z_teren_centar']:.4f} m**  |  "
+                    f"Z_top (vrh frustuma): **{prac_ft['z_top']:.4f} m**  |  "
                     f"H = **{prac_ft['H']:.2f} m**"
                 )
 
                 # --- Metrike red 1: geometrija ---
                 m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Z baze (teren)", f"{prac_ft['z_base']:.4f} m")
-                m2.metric("Z vrha (Z_top)", f"{prac_ft['z_top']:.4f} m")
-                m3.metric("Visina H",        f"{prac_ft['H']:.4f} m")
-                m4.metric("Izvodnica l",     f"{prac_ft['l_izv']:.4f} m")
-                m5.metric("Ugao α",          f"{prac_ft['alpha_deg']:.1f} °")
+                m1.metric("Z unos",            f"{prac_ft['z_unos']:.2f} m")
+                m2.metric("Z baze (korigovano)" if prac_ft['korekcija'] else "Z baze",
+                          f"{prac_ft['z_base']:.4f} m",
+                          delta=f"{prac_ft['z_base']-prac_ft['z_unos']:.2f} m" if prac_ft['korekcija'] else None,
+                          delta_color="inverse")
+                m3.metric("Z terena u centru",  f"{prac_ft['z_teren_centar']:.4f} m")
+                m4.metric("Z min. zone",        f"{prac_ft['z_min_zona']:.4f} m")
+                m5.metric("Z granica (min-10m)", f"{prac_ft['z_granica']:.4f} m")
 
-                # --- Metrike red 2: površine ---
+                # --- Metrike red 2: visina i radijusi ---
                 m6, m7, m8, m9 = st.columns(4)
-                m6.metric("A baze (presek)",  f"{prac_ft['A_baza']:,.4f} m²")
-                m7.metric("A gornjeg kruga",  f"{prac_ft['A_gornji']:,.4f} m²")
-                m8.metric("A bocna",          f"{prac_ft['A_bocna']:,.4f} m²")
-                m9.metric("A ukupno spoljna", f"{prac_ft['A_ukupno']:,.4f} m²")
+                m6.metric("Z_top (vrh)",   f"{prac_ft['z_top']:.4f} m")
+                m7.metric("Visina H",      f"{prac_ft['H']:.4f} m")
+                m8.metric("Izvodnica l",   f"{prac_ft['l_izv']:.4f} m")
+                m9.metric("Ugao α",        f"{prac_ft['alpha_deg']:.1f} °")
 
-                # --- Metrika zapremina ---
+                # --- Metrike red 3: površine ---
+                m10, m11, m12, m13 = st.columns(4)
+                m10.metric("A baze (presek)",  f"{prac_ft['A_baza']:,.4f} m²")
+                m11.metric("A gornjeg kruga",  f"{prac_ft['A_gornji']:,.4f} m²")
+                m12.metric("A bocna",          f"{prac_ft['A_bocna']:,.4f} m²")
+                m13.metric("A ukupno spoljna", f"{prac_ft['A_ukupno']:,.4f} m²")
+
+                # --- Zapremina ---
                 st.metric("Zapremina frustuma  π·H/3·(R²+R·r+r²)",
                           f"{prac_ft['V_frustum']:,.4f} m³")
 
