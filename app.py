@@ -1889,7 +1889,7 @@ def _frustum_na_terenu_gore(
         z=np.append(base_z, base_z[0]) + 0.05,
         mode="lines",
         line=dict(color="#dd2222", width=5),
-        name=f"Presek/Baza  (R={r_base:.1f}m,  A={A_baza:,.1f}m²)",
+        name=f"Presek/Baza  (R={r_base:.1f}m,  A={A_presek_2d:,.1f}m²)",
     ))
 
     # Popunjen disk baze — Mesh3d crveni
@@ -2120,7 +2120,7 @@ def _frustum_na_terenu_gore(
         _Patch(facecolor='#cc44aa', alpha=0.7,
                label='Teren (konkretni — kupa_teren_presek.py)'),
         _Patch(facecolor='#dd2222', alpha=0.85,
-               label=f'Presek/Baza  (A={A_baza:,.2f} m²)'),
+               label=f'Presek/Baza  (A={A_presek_2d:,.2f} m²)'),
     ]
     ax_mpl.legend(handles=legend_elem, loc='upper left', fontsize=9, framealpha=0.85)
 
