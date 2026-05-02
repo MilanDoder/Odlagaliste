@@ -1731,25 +1731,81 @@ def _frustum_na_terenu_gore(
     # --- Geometrija frustuma (ide gore) ---
     if abs(np.tan(alpha_rad)) < 1e-9:
         raise ValueError("Ugao ne smije biti 0°")
-    H        = (r_base - r_top) / np.tan(alpha_rad)
-    z_top    = z_base + H
+    H      = (r_base - r_top) / np.tan(alpha_rad)
+    z_top  = z_base + H
 
-    # --- Egzaktni proračun ---
-    # Zapremina frustuma
-    V_frustum = (np.pi * H / 3.0) * (r_top**2 + r_top * r_base + r_base**2)
+    # =========================================================
+    # PRORAČUN ZAPREMINE — samo dio IZNAD terena
+    # =========================================================
+    #
+    # Frustum ima vrh na z_top i bazu na z_base.
+    # Teren je neravna površina Z_t(x,y).
+    # Za svaku (x,y) tačku grida:
+    #   - r_frustum(x,y) = r_top + (z_top - Z_t(x,y)) * tan(alpha)
+    #     to je poluprecnik frustuma NA VISINI TERENA u toj tački
+    #   - Tačka je "unutar" frustuma ako: dist(x,y) <= r_frustum(x,y)
+    #     i Z_t(x,y) <= z_top  i  Z_t(x,y) >= z_base
+    #
+    # Za svaku unutrašnju tačku stupac od Z_t do Z_frustum_surface(x,y):
+    #   Z_frustum_surface = z_top - (dist - r_top) / tan(alpha)
+    #   dV = (Z_frustum_surface - Z_t) * dx * dy
+    #
+    # Ovo je egzaktno za ravni teren, numeričko za neravni.
 
-    # Površina baze (presek = krug koji sjedi na terenu)
-    A_baza    = np.pi * r_base**2
+    dx = (x_max - x_min) / (nx - 1)
+    dy = (y_max - y_min) / (ny - 1)
 
-    # Površina gornjeg kruga
-    A_gornji  = np.pi * r_top**2
+    # Poluprecnik frustuma na visini terena u svakoj tački
+    h_do_terena   = np.maximum(z_top - Z_t, 0.0)   # od vrha do terena
+    r_frust_at_z  = r_top + h_do_terena * np.tan(alpha_rad)
 
-    # Bocna površina (lateral): π*(r_top+r_base)*l, l=izvodnica
-    l_izv     = np.sqrt(H**2 + (r_base - r_top)**2)
-    A_bocna   = np.pi * (r_top + r_base) * l_izv
+    # Maska: tačke unutar frustuma NA NIVOU TERENA
+    inside = (dist_c <= r_frust_at_z) & (Z_t <= z_top) & (Z_t >= z_base)
 
-    # Ukupna spoljna površina (bez baze — baza je na terenu)
-    A_ukupno  = A_gornji + A_bocna
+    # Visina stupca od terena do površine frustuma
+    # Površina frustuma u (x,y): z_frust = z_top - (dist - r_top) / tan(alpha)
+    # (za tačke unutar, dist <= r_frust_at_z)
+    z_frust_surf = np.where(
+        inside,
+        z_top - np.maximum(dist_c - r_top, 0.0) / np.tan(alpha_rad),
+        0.0
+    )
+    z_frust_surf = np.clip(z_frust_surf, z_base, z_top)
+
+    dz_col = np.maximum(np.where(inside, z_frust_surf - Z_t, 0.0), 0.0)
+    V_iznad_terena = float(np.sum(dz_col) * dx * dy)
+
+    # Zapremina cijelog frustuma (egzaktna formula) — za usporedbu
+    V_frustum_ukupno = (np.pi * H / 3.0) * (r_top**2 + r_top*r_base + r_base**2)
+
+    # Dio frustuma ispod terena = ukupno - iznad
+    V_ispod_terena = V_frustum_ukupno - V_iznad_terena
+
+    # =========================================================
+    # POVRŠINE
+    # =========================================================
+
+    # Površina preseka sa terenom (zona gdje frustum izlazi iz terena)
+    # = površina terena unutar maske (3D sa nagibom)
+    dZdx, dZdy = np.gradient(Z_t, dx, dy)
+    surf_elem   = np.sqrt(1.0 + dZdx**2 + dZdy**2)
+    A_presek_2d = float(inside.sum() * dx * dy)          # XY projekcija
+    A_presek_3d = float(np.sum(surf_elem[inside]) * dx * dy)  # prava 3D
+
+    # Gornji krug
+    A_gornji = np.pi * r_top**2
+
+    # Bocna površina SAMO dijela iznad terena — numerički
+    # Za svaki element bocne strane koji je iznad terena računamo površinu
+    # Aproksimacija: lateralna površina × udio visine iznad terena
+    l_izv_ukupno = np.sqrt(H**2 + (r_base - r_top)**2)
+    A_bocna_ukupno = np.pi * (r_top + r_base) * l_izv_ukupno
+    # Udio iznad terena (po visini)
+    H_iznad_srednji = float(np.mean(dz_col[inside])) if inside.any() else 0.0
+    A_bocna_iznad = A_bocna_ukupno * (V_iznad_terena / V_frustum_ukupno) if V_frustum_ukupno > 0 else 0.0
+
+    # Ukupna spoljna površina dijela iznad terena
+    A_ukupno_iznad = A_gornji + A_bocna_iznad + A_presek_3d
 
     proracun = dict(
         z_unos=z_base_unos, z_teren_centar=z_teren_centar,
@@ -1757,10 +1813,19 @@ def _frustum_na_terenu_gore(
         korekcija=korekcija_flag,
         z_base=z_base, z_top=z_top, H=H,
         r_top=r_top, r_base=r_base, alpha_deg=alpha_deg,
-        l_izv=l_izv,
-        A_baza=A_baza, A_gornji=A_gornji,
-        A_bocna=A_bocna, A_ukupno=A_ukupno,
-        V_frustum=V_frustum,
+        l_izv=l_izv_ukupno,
+        # Zapremine
+        V_frustum_ukupno=V_frustum_ukupno,
+        V_iznad_terena=V_iznad_terena,
+        V_ispod_terena=V_ispod_terena,
+        # Površine
+        A_gornji=A_gornji,
+        A_presek_2d=A_presek_2d,
+        A_presek_3d=A_presek_3d,
+        A_bocna_iznad=A_bocna_iznad,
+        A_ukupno_iznad=A_ukupno_iznad,
+        # Grid info
+        n_inside=int(inside.sum()),
     )
 
     # --- Kontura kругова ---
@@ -2077,16 +2142,19 @@ def _frustum_na_terenu_gore(
         f"{korekcija_txt}"
         f"  {'Z baze frustuma':38s}  {z_base:>10.4f} m\n"
         f"  {'Z vrha (Z_top)':38s}  {z_top:>10.4f} m\n"
-        f"  {'Visina H':38s}  {H:>10.4f} m\n"
+        f"  {'Visina H (ukupna)':38s}  {H:>10.4f} m\n"
         f"  {'Poluugao α':38s}  {alpha_deg:>10.2f} °\n"
-        f"  {'Izvodnica l':38s}  {l_izv:>10.4f} m\n"
+        f"  {'Izvodnica l':38s}  {l_izv_ukupno:>10.4f} m\n"
         f"  {'-'*54}\n"
-        f"  {'Povrsina baze (presek)  π·R_base²':38s}  {A_baza:>10.4f} m²\n"
+        f"  {'Povrsina preseka sa terenom (2D)':38s}  {A_presek_2d:>10.4f} m²\n"
+        f"  {'Povrsina preseka sa terenom (3D)':38s}  {A_presek_3d:>10.4f} m²\n"
         f"  {'Povrsina gornjeg kruga  π·R_top²':38s}  {A_gornji:>10.4f} m²\n"
-        f"  {'Bocna povrsina  π·(R_top+R_base)·l':38s}  {A_bocna:>10.4f} m²\n"
-        f"  {'Ukupna spoljna povrsina':38s}  {A_ukupno:>10.4f} m²\n"
+        f"  {'Bocna povrsina (iznad terena)':38s}  {A_bocna_iznad:>10.4f} m²\n"
+        f"  {'Ukupna spoljna povrsina (iznad)':38s}  {A_ukupno_iznad:>10.4f} m²\n"
         f"  {'-'*54}\n"
-        f"  {'Zapremina frustuma  π·H/3·(R²+R·r+r²)':38s}  {V_frustum:>10.4f} m³"
+        f"  {'Zapremina CIJELOG frustuma':38s}  {V_frustum_ukupno:>10.4f} m³\n"
+        f"  {'Zapremina ISPOD terena':38s}  {V_ispod_terena:>10.4f} m³\n"
+        f"  {'Zapremina IZNAD terena (stvarna)':38s}  {V_iznad_terena:>10.4f} m³"
     )
     fig_mpl.text(
         0.5, 0.005, tekst,
@@ -2228,15 +2296,26 @@ with tab_frustum_teren:
                 m9.metric("Ugao α",        f"{prac_ft['alpha_deg']:.1f} °")
 
                 # --- Metrike red 3: površine ---
+                st.markdown("**Površine**")
                 m10, m11, m12, m13 = st.columns(4)
-                m10.metric("A baze (presek)",  f"{prac_ft['A_baza']:,.4f} m²")
-                m11.metric("A gornjeg kruga",  f"{prac_ft['A_gornji']:,.4f} m²")
-                m12.metric("A bocna",          f"{prac_ft['A_bocna']:,.4f} m²")
-                m13.metric("A ukupno spoljna", f"{prac_ft['A_ukupno']:,.4f} m²")
+                m10.metric("A presek sa terenom (2D)", f"{prac_ft['A_presek_2d']:,.2f} m²")
+                m11.metric("A presek sa terenom (3D)", f"{prac_ft['A_presek_3d']:,.2f} m²")
+                m12.metric("A gornji krug",            f"{prac_ft['A_gornji']:,.2f} m²")
+                m13.metric("A bocna (iznad terena)",   f"{prac_ft['A_bocna_iznad']:,.2f} m²")
 
-                # --- Zapremina ---
-                st.metric("Zapremina frustuma  π·H/3·(R²+R·r+r²)",
-                          f"{prac_ft['V_frustum']:,.4f} m³")
+                # --- Metrike red 4: zapremine ---
+                st.markdown("**Zapremine**")
+                v1, v2, v3 = st.columns(3)
+                v1.metric("V cijelog frustuma",
+                          f"{prac_ft['V_frustum_ukupno']:,.2f} m³")
+                v2.metric("V ispod terena (oduzeto)",
+                          f"{prac_ft['V_ispod_terena']:,.2f} m³",
+                          delta=f"-{prac_ft['V_ispod_terena']:,.2f} m³",
+                          delta_color="inverse")
+                v3.metric("✅ V iznad terena (stvarna)",
+                          f"{prac_ft['V_iznad_terena']:,.2f} m³",
+                          delta=f"{prac_ft['V_iznad_terena']/prac_ft['V_frustum_ukupno']*100:.1f}% od ukupnog"
+                          if prac_ft['V_frustum_ukupno'] > 0 else None)
 
                 st.divider()
 
