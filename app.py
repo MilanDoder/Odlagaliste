@@ -2316,6 +2316,7 @@ with tab_frustum_teren:
                           f"{prac_ft['V_iznad_terena']:,.2f} m³",
                           delta=f"{prac_ft['V_iznad_terena']/prac_ft['V_frustum_ukupno']*100:.1f}% od ukupnog"
                           if prac_ft['V_frustum_ukupno'] > 0 else None)
+              
 
                 st.divider()
 
