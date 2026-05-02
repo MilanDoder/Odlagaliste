@@ -727,8 +727,8 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_teren, tab_optimizacija, tab_rezultati, tab_detalji = st.tabs([
-    "🗺 Teren", "⚙ Optimizacija", "📊 Rezultati", "🔍 Detalji kupe"
+tab_teren, tab_optimizacija, tab_rezultati, tab_detalji, tab_frustum = st.tabs([
+    "🗺 Teren", "⚙ Optimizacija", "📊 Rezultati", "🔍 Detalji kupe", "🔺 Frustum"
 ])
 
 
@@ -1107,3 +1107,533 @@ with tab_detalji:
             st.plotly_chart(fig3d, use_container_width=True)
         else:
             st.info("Instaliraj plotly za 3D prikaz kupe.")
+
+
+# ---------------------------------------------------------------------------
+# Tab 5: Frustum — direktni prikaz bez Monte Carlo / GA
+# ---------------------------------------------------------------------------
+
+def _frustum_plotly_ravan(
+    cx: float, cy: float, z_top: float,
+    r_top: float, alpha_deg: float,
+    terrain_z: float = 0.0,
+    depth_below: float = 10.0,
+) -> tuple[go.Figure, dict]:
+    """Plotly 3D prikaz frustuma na RAVNOM terenu."""
+
+    alpha_rad  = np.radians(alpha_deg)
+    z_base     = terrain_z - depth_below
+    h_total    = z_top - z_base
+    r_base     = r_top + h_total * np.tan(alpha_rad)
+    h_presek   = z_top - terrain_z
+    r_presek   = r_top + h_presek * np.tan(alpha_rad)
+
+    def frustum_vol(r1, r2, h):
+        return (np.pi * h / 3.0) * (r1**2 + r1*r2 + r2**2)
+
+    v_total  = frustum_vol(r_top, r_base, h_total)
+    v_iznad  = frustum_vol(r_top, r_presek, h_presek)
+    v_ispod  = frustum_vol(r_presek, r_base, depth_below)
+    a_gornji = np.pi * r_top**2
+    a_presek = np.pi * r_presek**2
+    a_baza   = np.pi * r_base**2
+
+    assert abs(v_total - (v_iznad + v_ispod)) < 1.0
+
+    N = 120
+    theta = np.linspace(0, 2*np.pi, N)
+
+    top_x   = cx + r_top    * np.cos(theta)
+    top_y   = cy + r_top    * np.sin(theta)
+    pres_x  = cx + r_presek * np.cos(theta)
+    pres_y  = cy + r_presek * np.sin(theta)
+    base_x  = cx + r_base   * np.cos(theta)
+    base_y  = cy + r_base   * np.sin(theta)
+
+    # Teren — ravan kvadrat
+    margin = r_base * 2.0
+    t_x = np.array([cx-margin, cx+margin, cx+margin, cx-margin, cx-margin])
+    t_y = np.array([cy-margin, cy-margin, cy+margin, cy+margin, cy-margin])
+    t_z = np.full(5, terrain_z)
+
+    fig = go.Figure()
+
+    # Teren (svetlo-plavi popunjen kvadrat)
+    fig.add_trace(go.Scatter3d(
+        x=t_x, y=t_y, z=t_z,
+        mode="lines",
+        line=dict(color="#4a8aaa", width=1),
+        surfaceaxis=2,
+        surfacecolor="rgba(122, 184, 212, 0.5)",
+        name="Ravni teren",
+        showlegend=True,
+    ))
+
+    # Mreza terena
+    for i in np.linspace(cx-margin, cx+margin, 8):
+        fig.add_trace(go.Scatter3d(
+            x=[i, i], y=[cy-margin, cy+margin], z=[terrain_z, terrain_z],
+            mode="lines", line=dict(color="#4a8aaa", width=0.5),
+            showlegend=False, hoverinfo="skip",
+        ))
+    for j in np.linspace(cy-margin, cy+margin, 8):
+        fig.add_trace(go.Scatter3d(
+            x=[cx-margin, cx+margin], y=[j, j], z=[terrain_z, terrain_z],
+            mode="lines", line=dict(color="#4a8aaa", width=0.5),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+    # Bocne strane frustuma IZNAD terena (zelene)
+    x_boc, y_boc, z_boc = [], [], []
+    for i in range(N-1):
+        x_boc += [top_x[i],   pres_x[i],   pres_x[i+1], top_x[i+1],   None]
+        y_boc += [top_y[i],   pres_y[i],   pres_y[i+1], top_y[i+1],   None]
+        z_boc += [z_top,      terrain_z,   terrain_z,   z_top,         None]
+
+    fig.add_trace(go.Scatter3d(
+        x=x_boc, y=y_boc, z=z_boc,
+        mode="lines",
+        line=dict(color="rgba(34,170,68,0.4)", width=1),
+        surfaceaxis=None,
+        name="Frustum (iznad terena)",
+        showlegend=True,
+    ))
+
+    # Bocne strane ISPOD terena (zelene, isprekidane)
+    x_isp, y_isp, z_isp = [], [], []
+    for i in range(N-1):
+        x_isp += [pres_x[i],   base_x[i],   base_x[i+1], pres_x[i+1],   None]
+        y_isp += [pres_y[i],   base_y[i],   base_y[i+1], pres_y[i+1],   None]
+        z_isp += [terrain_z,   z_base,      z_base,      terrain_z,      None]
+
+    fig.add_trace(go.Scatter3d(
+        x=x_isp, y=y_isp, z=z_isp,
+        mode="lines",
+        line=dict(color="rgba(34,170,68,0.25)", width=1, dash="dot"),
+        name="Frustum (ispod terena)",
+        showlegend=True,
+    ))
+
+    # Gornji krug (tamno zelena linija)
+    fig.add_trace(go.Scatter3d(
+        x=np.append(top_x, top_x[0]),
+        y=np.append(top_y, top_y[0]),
+        z=np.full(N+1, z_top),
+        mode="lines",
+        line=dict(color="#116622", width=4),
+        name=f"Gornji krug (R={r_top:.1f}m)",
+    ))
+
+    # Kontura preseka (crvena linija + popunjen disk)
+    fig.add_trace(go.Scatter3d(
+        x=np.append(pres_x, pres_x[0]),
+        y=np.append(pres_y, pres_y[0]),
+        z=np.full(N+1, terrain_z + 0.1),
+        mode="lines",
+        line=dict(color="#dd2222", width=5),
+        name=f"Presek sa terenom (R_p={r_presek:.1f}m)",
+    ))
+
+    # Popunjen presek (fan trokuta kao Mesh3d)
+    px_fan  = np.concatenate([[cx], pres_x])
+    py_fan  = np.concatenate([[cy], pres_y])
+    pz_fan  = np.full(N+1, terrain_z + 0.05)
+    i_fan   = [0] * (N-1)
+    j_fan   = list(range(1, N))
+    k_fan   = list(range(2, N+1))
+    fig.add_trace(go.Mesh3d(
+        x=px_fan, y=py_fan, z=pz_fan,
+        i=i_fan, j=j_fan, k=k_fan,
+        color="#dd2222", opacity=0.75,
+        name="Presek (popunjen)",
+        showlegend=False,
+    ))
+
+    # Frustum bocna površina kao Mesh3d (iznad terena)
+    x_m = np.concatenate([top_x, pres_x])
+    y_m = np.concatenate([top_y, pres_y])
+    z_m = np.concatenate([np.full(N, z_top), np.full(N, terrain_z)])
+    im, jm, km = [], [], []
+    for i in range(N-1):
+        im += [i,     i+1,   i+N]
+        jm += [i+1,   i+N+1, i+N+1]
+        km += [i+N,   i+N,   i+1]
+    fig.add_trace(go.Mesh3d(
+        x=x_m, y=y_m, z=z_m,
+        i=im, j=jm, k=km,
+        color="#22aa44", opacity=0.40,
+        name="Frustum površina",
+        showlegend=True,
+    ))
+
+    # Gornji disk (Mesh3d)
+    tx_fan = np.concatenate([[cx], top_x])
+    ty_fan = np.concatenate([[cy], top_y])
+    tz_fan = np.full(N+1, z_top)
+    fig.add_trace(go.Mesh3d(
+        x=tx_fan, y=ty_fan, z=tz_fan,
+        i=i_fan, j=j_fan, k=k_fan,
+        color="#22aa44", opacity=0.50,
+        name="Gornji disk",
+        showlegend=False,
+    ))
+
+    # Osa
+    fig.add_trace(go.Scatter3d(
+        x=[cx, cx], y=[cy, cy], z=[z_base, z_top],
+        mode="lines",
+        line=dict(color="white", width=1.5, dash="dash"),
+        name="Osa",
+        showlegend=False,
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=f"Frustum  (R_top={r_top:.1f}m, α={alpha_deg:.1f}°)  ·  Ravni teren  ·  Presek",
+            font=dict(size=14),
+        ),
+        scene=dict(
+            xaxis_title="X (m)",
+            yaxis_title="Y (m)",
+            zaxis_title="Z — visina (m)",
+            aspectmode="data",
+            bgcolor="rgba(10,12,20,1)",
+            xaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            yaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            zaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            camera=dict(eye=dict(x=1.4, y=1.4, z=0.9)),
+        ),
+        height=640,
+        margin=dict(l=0, r=0, t=50, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(bgcolor="rgba(20,20,30,0.85)", font=dict(size=11)),
+    )
+
+    proracun = dict(
+        r_top=r_top, r_presek=r_presek, r_base=r_base,
+        a_gornji=a_gornji, a_presek=a_presek, a_baza=a_baza,
+        v_total=v_total, v_iznad=v_iznad, v_ispod=v_ispod,
+        h_total=h_total, h_iznad=h_presek, h_ispod=depth_below,
+    )
+    return fig, proracun
+
+
+def _frustum_plotly_neravni(
+    cx: float, cy: float, z_top: float,
+    r_top: float, alpha_deg: float,
+    depth_below: float = 10.0,
+    nx: int = 100, ny: int = 40,
+    amp: float = 6.0,
+) -> tuple[go.Figure, dict]:
+    """Plotly 3D prikaz frustuma na NERAVNOM terenu (sinusoidalna aproksimacija)."""
+
+    alpha_rad = np.radians(alpha_deg)
+
+    # Teren
+    margin = (r_top + 200) * 2.5
+    x_lin  = np.linspace(cx - margin/2, cx + margin/2, nx)
+    y_lin  = np.linspace(cy - margin/4, cy + margin/4, ny)
+    X_t, Y_t = np.meshgrid(x_lin, y_lin)
+    xl = X_t - cx; yl = Y_t - cy
+    Z_t = (amp     * np.sin(0.008 * xl) * np.cos(0.012 * yl)
+         + amp*0.5 * np.sin(0.018 * xl + 1.1)
+         + amp*0.35* np.cos(0.009 * yl + 0.7))
+
+    # Geometrija frustuma
+    r_max_est  = r_top + (z_top - Z_t.min()) * np.tan(alpha_rad)
+    dist_c     = np.sqrt((X_t - cx)**2 + (Y_t - cy)**2)
+    zone_mask  = dist_c <= r_max_est * 1.1
+    z_min_zona = Z_t[zone_mask].min() if zone_mask.any() else Z_t.min()
+    z_base     = z_min_zona - depth_below
+    h_total    = z_top - z_base
+    r_base     = r_top + h_total * np.tan(alpha_rad)
+
+    # Presek: tacke grida unutar frustuma na visini terena
+    r_frust_at_terrain = r_top + (z_top - Z_t) * np.tan(alpha_rad)
+    r_frust_at_terrain = np.where(Z_t <= z_top, r_frust_at_terrain, 0.0)
+    inside = (dist_c <= r_frust_at_terrain) & (Z_t <= z_top)
+
+    # Zapremina (numericki)
+    dx = (x_lin[-1] - x_lin[0]) / (nx - 1)
+    dy = (y_lin[-1] - y_lin[0]) / (ny - 1)
+    z_frust_surf = np.where(
+        inside,
+        z_top - np.maximum(dist_c - r_top, 0.0) / np.tan(alpha_rad),
+        0.0,
+    )
+    z_frust_surf = np.clip(z_frust_surf, z_base, z_top)
+    dz_col = np.maximum(np.where(inside, z_frust_surf - Z_t, 0.0), 0.0)
+    v_presek_num = np.sum(dz_col) * dx * dy
+
+    # Zapremina celog frustuma
+    def frustum_vol(r1, r2, h):
+        return (np.pi * h / 3.0) * (r1**2 + r1*r2 + r2**2)
+    v_total = frustum_vol(r_top, r_base, h_total)
+
+    # Povrsina preseka
+    dZdx, dZdy = np.gradient(Z_t, dx, dy)
+    surf_elem  = np.sqrt(1.0 + dZdx**2 + dZdy**2)
+    a_presek_2d = inside.sum() * dx * dy
+    a_presek_3d = np.sum(surf_elem[inside]) * dx * dy
+
+    N = 100
+    theta  = np.linspace(0, 2*np.pi, N)
+    top_x  = cx + r_top  * np.cos(theta);  top_y  = cy + r_top  * np.sin(theta)
+    base_x = cx + r_base * np.cos(theta);  base_y = cy + r_base * np.sin(theta)
+
+    fig = go.Figure()
+
+    # Teren — Mesh3d bojano po visini
+    from scipy.spatial import Delaunay as _Del
+    v_flat = np.column_stack([X_t.ravel(), Y_t.ravel()])
+    z_flat = Z_t.ravel()
+    try:
+        tri = _Del(v_flat)
+        i_t, j_t, k_t = tri.simplices[:,0], tri.simplices[:,1], tri.simplices[:,2]
+        intensity = (z_flat - z_flat.min()) / max(z_flat.max() - z_flat.min(), 1)
+        fig.add_trace(go.Mesh3d(
+            x=v_flat[:,0], y=v_flat[:,1], z=z_flat,
+            i=i_t, j=j_t, k=k_t,
+            intensity=intensity,
+            colorscale=[
+                [0.0,  "rgba(180,220,240,0.9)"],
+                [0.4,  "rgba(100,170,210,0.9)"],
+                [0.7,  "rgba(60,130,180,0.9)"],
+                [1.0,  "rgba(30,80,140,0.9)"],
+            ],
+            showscale=True,
+            colorbar=dict(title="Visina terena (m)", len=0.5),
+            opacity=0.80,
+            name="Neravni teren",
+            hovertemplate="X: %{x:.0f}<br>Y: %{y:.0f}<br>Z: %{z:.2f}m<extra>Teren</extra>",
+        ))
+    except Exception:
+        pass
+
+    # Presek — crvene tacke + kontura
+    IX = X_t[inside]; IY = Y_t[inside]; IZ = Z_t[inside]
+    if len(IX) > 0:
+        fig.add_trace(go.Scatter3d(
+            x=IX, y=IY, z=IZ + 0.15,
+            mode="markers",
+            marker=dict(size=3, color="#dd2222", opacity=0.75),
+            name=f"Presek zona (A_2D={a_presek_2d:,.0f}m²)",
+        ))
+
+    # Granica preseka
+    from matplotlib.path import Path as MplPath
+    boundary_mask = np.zeros_like(inside, dtype=bool)
+    boundary_mask[1:-1, 1:-1] = (
+        inside[1:-1,1:-1] & (
+            ~inside[:-2,1:-1] | ~inside[2:,1:-1] |
+            ~inside[1:-1,:-2] | ~inside[1:-1,2:]
+        )
+    )
+    BX = X_t[boundary_mask]; BY = Y_t[boundary_mask]; BZ = Z_t[boundary_mask]
+    if len(BX) > 0:
+        ang = np.arctan2(BY - cy, BX - cx)
+        si  = np.argsort(ang)
+        BX, BY, BZ = BX[si], BY[si], BZ[si]
+        fig.add_trace(go.Scatter3d(
+            x=np.append(BX, BX[0]),
+            y=np.append(BY, BY[0]),
+            z=np.append(BZ, BZ[0]) + 0.2,
+            mode="lines",
+            line=dict(color="#ff2222", width=4),
+            name="Granica preseka",
+        ))
+
+    # Frustum bocna površina (iznad terena — Mesh3d)
+    x_m = np.concatenate([top_x, base_x])
+    y_m = np.concatenate([top_y, base_y])
+    z_m = np.concatenate([np.full(N, z_top), np.full(N, z_base)])
+    im, jm, km = [], [], []
+    for i in range(N-1):
+        im += [i,   i+1, i+N];   jm += [i+1, i+N+1, i+N+1];   km += [i+N, i+N, i+1]
+    fig.add_trace(go.Mesh3d(
+        x=x_m, y=y_m, z=z_m,
+        i=im, j=jm, k=km,
+        color="#22aa44", opacity=0.38,
+        name="Frustum",
+        showlegend=True,
+    ))
+
+    # Gornji krug
+    fig.add_trace(go.Scatter3d(
+        x=np.append(top_x, top_x[0]),
+        y=np.append(top_y, top_y[0]),
+        z=np.full(N+1, z_top),
+        mode="lines",
+        line=dict(color="#116622", width=4),
+        name=f"Gornji krug (R_top={r_top:.1f}m)",
+    ))
+
+    # Gornji disk
+    tx_f = np.concatenate([[cx], top_x])
+    ty_f = np.concatenate([[cy], top_y])
+    tz_f = np.full(N+1, z_top)
+    i_f  = [0]*(N-1); j_f = list(range(1,N)); k_f = list(range(2,N+1))
+    fig.add_trace(go.Mesh3d(
+        x=tx_f, y=ty_f, z=tz_f,
+        i=i_f, j=j_f, k=k_f,
+        color="#22aa44", opacity=0.55,
+        name="Gornji disk",
+        showlegend=False,
+    ))
+
+    # Osa
+    fig.add_trace(go.Scatter3d(
+        x=[cx, cx], y=[cy, cy], z=[z_base, z_top],
+        mode="lines",
+        line=dict(color="white", width=1.5, dash="dash"),
+        name="Osa", showlegend=False,
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text=f"Frustum  (R_top={r_top:.1f}m, α={alpha_deg:.1f}°)  ·  Neravni teren  ·  Presek",
+            font=dict(size=14),
+        ),
+        scene=dict(
+            xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Z (m)",
+            aspectmode="data",
+            bgcolor="rgba(10,12,20,1)",
+            xaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            yaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            zaxis=dict(gridcolor="#223", showbackground=True,
+                       backgroundcolor="rgba(10,12,20,1)"),
+            camera=dict(eye=dict(x=1.4, y=1.4, z=0.9)),
+        ),
+        height=640,
+        margin=dict(l=0, r=0, t=50, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(bgcolor="rgba(20,20,30,0.85)", font=dict(size=11)),
+    )
+
+    proracun = dict(
+        r_top=r_top, r_base=r_base,
+        a_presek_2d=a_presek_2d, a_presek_3d=a_presek_3d,
+        v_total=v_total, v_presek_num=v_presek_num,
+        h_total=h_total, z_base=z_base, z_min_zona=z_min_zona,
+    )
+    return fig, proracun
+
+
+with tab_frustum:
+    st.subheader("Frustum — direktni prikaz")
+    st.caption(
+        "Generiše i prikazuje frustum (zarubljenu kupu) na zadanim parametrima. "
+        "Nema Monte Carlo ni GA — samo geometrija, presek i proračun."
+    )
+
+    # --- Tip terena ---
+    tip_terena = st.radio(
+        "Tip terena",
+        ["🟦 Ravni teren", "🌄 Neravni teren (sinusoidalni)"],
+        horizontal=True,
+    )
+
+    st.divider()
+
+    # --- Parametri frustuma ---
+    col_l, col_r = st.columns(2)
+
+    with col_l:
+        st.markdown("**Pozicija centra**")
+        if st.session_state.podaci is not None:
+            _pd = st.session_state.podaci
+            _cx_def = float(_pd.centar_masa[0]) if _pd.centar_masa is not None else 4_970_000.0
+            _cy_def = float(_pd.centar_masa[1]) if _pd.centar_masa is not None else 6_388_500.0
+            _cz_def = float(_pd.teren.vertices[:, 2].mean()) + 50.0
+        else:
+            _cx_def, _cy_def, _cz_def = 4_970_000.0, 6_388_500.0, 75.0
+
+        fr_cx    = st.number_input("Centar X", value=_cx_def, format="%.2f", key="fr_cx")
+        fr_cy    = st.number_input("Centar Y", value=_cy_def, format="%.2f", key="fr_cy")
+        fr_z_top = st.number_input("Visina gornjeg kruga Z_top (m)",
+                                   value=_cz_def, format="%.2f", key="fr_ztop")
+
+    with col_r:
+        st.markdown("**Dimenzije**")
+        fr_r_top   = st.number_input("Poluprecnik gornjeg kruga R_top (m)",
+                                     min_value=1.0, value=15.0, step=1.0, key="fr_rtop")
+        fr_alpha   = st.number_input("Poluugao strana α (°)",
+                                     min_value=1.0, max_value=80.0,
+                                     value=25.0, step=0.5, key="fr_alpha")
+        fr_depth   = st.number_input("Dubina baze ispod min. terena (m)",
+                                     min_value=1.0, value=10.0, step=1.0, key="fr_depth")
+        if tip_terena == "🟦 Ravni teren":
+            fr_tz = st.number_input("Nivo terena Z (m)",
+                                    value=0.0, format="%.2f", key="fr_tz")
+        else:
+            fr_amp = st.slider("Amplituda neravnina terena (m)",
+                               min_value=0.5, max_value=20.0, value=6.0, step=0.5,
+                               key="fr_amp")
+
+    st.divider()
+    btn_frustum = st.button("▶ Generiši frustum", type="primary",
+                            use_container_width=True, key="btn_frustum")
+
+    if btn_frustum:
+        with st.spinner("Računam geometriju i generišem prikaz..."):
+            try:
+                if tip_terena == "🟦 Ravni teren":
+                    fig_fr, prac = _frustum_plotly_ravan(
+                        cx=fr_cx, cy=fr_cy, z_top=fr_z_top,
+                        r_top=fr_r_top, alpha_deg=fr_alpha,
+                        terrain_z=fr_tz, depth_below=fr_depth,
+                    )
+                    # Metrike
+                    st.success("Frustum generisan!")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("R_top (gornji)",   f"{prac['r_top']:.2f} m")
+                    m2.metric("R_presek (teren)", f"{prac['r_presek']:.2f} m")
+                    m3.metric("R_base (dno)",     f"{prac['r_base']:.2f} m")
+                    m4.metric("Visina H",          f"{prac['h_total']:.2f} m")
+
+                    m5, m6, m7, m8 = st.columns(4)
+                    m5.metric("A gornji krug",    f"{prac['a_gornji']:,.1f} m²")
+                    m6.metric("A presek",          f"{prac['a_presek']:,.1f} m²")
+                    m7.metric("A baza",            f"{prac['a_baza']:,.1f} m²")
+                    m8.metric("H iznad terena",    f"{prac['h_iznad']:.1f} m")
+
+                    st.divider()
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Zapremina CELOG frustuma", f"{prac['v_total']:,.1f} m³")
+                    c2.metric("Zapremina IZNAD terena",   f"{prac['v_iznad']:,.1f} m³  "
+                              f"({prac['v_iznad']/prac['v_total']*100:.1f}%)")
+                    c3.metric("Zapremina ISPOD terena",   f"{prac['v_ispod']:,.1f} m³  "
+                              f"({prac['v_ispod']/prac['v_total']*100:.1f}%)")
+
+                else:
+                    fig_fr, prac = _frustum_plotly_neravni(
+                        cx=fr_cx, cy=fr_cy, z_top=fr_z_top,
+                        r_top=fr_r_top, alpha_deg=fr_alpha,
+                        depth_below=fr_depth, amp=fr_amp,
+                    )
+                    st.success("Frustum na neravnom terenu generisan!")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("R_top (gornji)",    f"{prac['r_top']:.2f} m")
+                    m2.metric("R_base (dno)",      f"{prac['r_base']:.2f} m")
+                    m3.metric("Z baze",             f"{prac['z_base']:.2f} m")
+                    m4.metric("Min. teren u zoni",  f"{prac['z_min_zona']:.2f} m")
+
+                    st.divider()
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("A presek (2D proj.)",  f"{prac['a_presek_2d']:,.1f} m²")
+                    c2.metric("A presek (3D nagib)",  f"{prac['a_presek_3d']:,.1f} m²")
+                    c3.metric("V celog frustuma",     f"{prac['v_total']:,.1f} m³")
+                    c4.metric("V presek → vrh",       f"{prac['v_presek_num']:,.1f} m³  "
+                              f"({prac['v_presek_num']/prac['v_total']*100:.1f}%)")
+
+                st.plotly_chart(fig_fr, use_container_width=True)
+
+            except Exception as e:
+                st.error(f"Greška: {e}")
+                import traceback
+                st.code(traceback.format_exc())
